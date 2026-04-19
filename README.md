@@ -1,4 +1,4 @@
-# CredRisk NTC score API (v2)
+# CredRisk NTC score API
 
 Single-file FastAPI service that scores NTC (new-to-credit) loan applications using weighted sections (income, tax, DTI, spending, hygiene, utility, investments, behavioural, enquiry). Weights and caps are driven by `scoring_weights.json` on disk; you can override them per request.
 
@@ -76,6 +76,3 @@ curl -s -X POST http://127.0.0.1:8000/score \
 
 CORS is enabled for browser clients (`allow_origins=["*"]` in code).
 
-## License / usage
-
-Internal or project-specific terms apply per your organization; this README only describes how to run and call the service.
