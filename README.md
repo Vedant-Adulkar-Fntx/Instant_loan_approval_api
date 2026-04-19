@@ -1,7 +1,3 @@
-Here’s a clean, **premium-quality `README.md`** for your project based on your codebase 👇
-
----
-
 # 🚀 NTC Loan Surrogate Scorecard API
 
 A **production-ready FastAPI-based scoring engine** designed to evaluate **New-To-Credit (NTC)** loan applicants using a **rule-based surrogate scorecard**.
@@ -58,57 +54,76 @@ Risk Band Classification
 
 ## ⚙️ Installation & Setup
 
-### 1️⃣ Install Dependencies
+## Requirements
 
-```bash
-pip install fastapi uvicorn
+- Python 3.10+ recommended
+- `python` / `python3` on your PATH
+
+## Quick start
+
+### Windows (PowerShell)
+
+```powershell
+.\run.ps1
 ```
 
-### 2️⃣ Run the API
+Optional:
+
+- `.\run.ps1 -Port 9000` — listen on another port
+- `.\run.ps1 -NoInstall` — skip `pip install` (faster restarts if deps are already installed)
+
+### macOS / Linux (bash)
 
 ```bash
+chmod +x run.sh
+./run.sh
+```
+
+Optional:
+
+- `./run.sh --port 9000`
+- `./run.sh --no-install`
+
+### Manual
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Unix:    source .venv/bin/activate
+pip install -r requirements.txt
 uvicorn ntc_score_api:app --host 0.0.0.0 --port 8000
 ```
 
-### 3️⃣ Open Swagger UI
+Then open [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) for interactive OpenAPI (Swagger UI).
 
-```
-http://localhost:8000/docs
-```
+## Project files
 
----
+| File | Role |
+|------|------|
+| `ntc_score_api.py` | FastAPI app and scoring logic |
+| `scoring_weights.json` | Default weights and configuration (edit on disk) |
+| `test_cases.json` | Example payloads for `/score` |
+| `requirements.txt` | `fastapi`, `uvicorn` |
 
-## 📥 API Endpoints
+## HTTP API (summary)
 
-### 🔹 Health Check
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | Liveness |
+| GET | `/scoring-config` | Current merged weights (from JSON + memory) |
+| POST | `/scoring-config/reload` | Re-read `scoring_weights.json` without restart |
+| POST | `/score` | Score one object or a batch (array). Optional top-level `scoring_config` merges over defaults for that call only |
 
-```
-GET /health
-```
+## Example: score with curl
 
----
+Replace `payload.json` with a snippet from `test_cases.json` or a full file:
 
-### 🔹 Get Active Scoring Config
-
-```
-GET /scoring-config
-```
-
----
-
-### 🔹 Reload Weights (No Restart Needed)
-
-```
-POST /scoring-config/reload
+```bash
+curl -s -X POST http://127.0.0.1:8000/score \
+  -H "Content-Type: application/json" \
+  -d @test_cases.json
 ```
 
----
-
-### 🔹 Score Application(s)
-
-```
-POST /score
-```
 
 #### ✅ Supports:
 
@@ -240,12 +255,5 @@ scoring_weights.json
 
 ---
 
-## 🧑‍💻 Author
-
-Built as a **risk-engineering-first scoring system** focusing on:
-
-* Interpretability
-* Flexibility
-* Production readiness
 
 
