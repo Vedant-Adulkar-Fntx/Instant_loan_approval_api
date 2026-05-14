@@ -13,12 +13,18 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
-
+import hmac
+import hashlib
+import time
+from fastapi import Request, HTTPException, Depends
 from fastapi import Body, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 
 # ── configurable weights (scoring_weights.json + optional request override) ──
 
+SHARED_SECRET = "653062af2925686e97ca59ba6b84f85018521c3947a3fee2a71070a070aeea9d"  # same secret, from environment variable
+TIMESTAMP_TOLERANCE_SECONDS = 240       # reject requests older than 4 min
 _WEIGHTS_PATH = Path(__file__).resolve().parent / "scoring_weights.json"
 _active_weights: dict[str, Any] = {}
 _SECTION_ORDER = (
@@ -33,6 +39,34 @@ _SECTION_ORDER = (
     "enquiry",
 )
 
+
+async def verify_signature(request: Request):
+    timestamp = request.headers.get("X-Timestamp")
+    nonce     = request.headers.get("X-Nonce")
+    signature = request.headers.get("X-Signature")
+
+    if not all([timestamp, nonce, signature]):
+        raise HTTPException(status_code=401, detail="Missing auth headers")
+
+    # 1. Reject stale requests (replay attack prevention)
+    age = abs(time.time() - int(timestamp))
+    if age > TIMESTAMP_TOLERANCE_SECONDS:
+        raise HTTPException(status_code=401, detail="Request expired")
+
+    # 2. Rebuild the payload the same way .NET did
+    body = await request.body()
+    payload = f"{timestamp}.{nonce}.{body.decode()}"
+
+    # 3. Compute expected signature
+    expected = hmac.new(
+        SHARED_SECRET.encode(),
+        payload.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+    # 4. Constant-time compare (prevents timing attacks)
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(status_code=401, detail="Invalid signature")
 
 def _g(cfg: dict[str, Any], *path: str, default: Any = None) -> Any:
     cur: Any = cfg
@@ -920,8 +954,8 @@ _SCORE_EXAMPLE_SINGLE: dict[str, Any] = {
     "meta": {
         "application_id": "example-app-id",
         "user_id": "USR-00001",
-        "source": "swagger",
-    },
+        "source": "swagger"
+    }
 }
 
 
@@ -929,12 +963,14 @@ _SCORE_EXAMPLE_SINGLE: dict[str, Any] = {
 
 app = FastAPI(
     title="NTC Scoring API",
-    version="1.0",
+    version="1.2",
     description=(
         "NTC surrogate scorecard: nested JSON like `test_cases.json` (**one object** or **array**). "
         "Default weights: `scoring_weights.json` next to this module. "
         "Optional per-request override: add `\"scoring_config\": { ... }` (partial JSON, deep-merged). "
-        "Inspect defaults: **GET /scoring-config**. Reload file without restart: **POST /scoring-config/reload**."
+        "Inspect defaults: **GET /scoring-config**. Reload file without restart: **POST /scoring-config/reload**.\n\n"
+        "**POST /score:** click **Authorize** on `/docs` and set `X-Timestamp`, `X-Nonce`, `X-Signature` "
+        "(HMAC-SHA256 hex over `{timestamp}.{nonce}.{raw body}`; must match the shared secret your frontend uses)."
     ),
     docs_url="/docs",
     redoc_url="/redoc",
@@ -988,7 +1024,9 @@ def reload_scoring_config():
     description=(
         "Body: one nested application object or an array (like `test_cases.json`). "
         "Optional top-level **`scoring_config`**: partial object merged over `scoring_weights.json` for this request only. "
-        "See **GET /scoring-config** for the full weight schema."
+        "See **GET /scoring-config** for the full weight schema.\n\n"
+        "**Auth:** use **Authorize** in `/docs` and fill `X-Timestamp`, `X-Nonce`, `X-Signature` "
+        "(same HMAC rules as your frontend; signature must match the exact JSON body you post)."
     ),
     responses={
         200: {
@@ -1012,8 +1050,13 @@ def reload_scoring_config():
                     }
                 }
             },
-        }
+        },
+        401: {
+            "description": "Missing/invalid HMAC headers, expired timestamp, or wrong signature",
+            "content": {"application/json": {"example": {"detail": "Missing auth headers"}}},
+        },
     },
+    dependencies=[Depends(verify_signature)]
 )
 def post_score(
     payload: Any = Body(
@@ -1033,3 +1076,55 @@ def post_score(
     ),
 ):
     return score_payload(payload)
+
+
+def custom_openapi():
+    if app.openapi_schema is not None:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        openapi_version=getattr(app, "openapi_version", "3.1.0"),
+        summary=getattr(app, "summary", None),
+        description=app.description,
+        routes=app.routes,
+        tags=app.openapi_tags,
+        servers=getattr(app, "servers", None) or None,
+    )
+    schemes = {
+        "HmacTimestamp": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-Timestamp",
+            "description": (
+                "Unix epoch seconds (UTC), as a string of digits. "
+                f"Must be within ±{TIMESTAMP_TOLERANCE_SECONDS}s of the server clock."
+            ),
+        },
+        "HmacNonce": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-Nonce",
+            "description": "Unique value per request (e.g. UUID) to prevent replay with the same timestamp.",
+        },
+        "HmacSignature": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-Signature",
+            "description": (
+                "Hex HMAC-SHA256 over UTF-8 bytes of `{X-Timestamp}.{X-Nonce}.{exact raw JSON body}` "
+                "(same shared secret as the server / your frontend)."
+            ),
+        },
+    }
+    components = openapi_schema.setdefault("components", {})
+    ss = components.setdefault("securitySchemes", {})
+    ss.update(schemes)
+    score_post = openapi_schema.get("paths", {}).get("/score", {}).get("post")
+    if score_post is not None:
+        score_post["security"] = [{"HmacTimestamp": [], "HmacNonce": [], "HmacSignature": []}]
+    app.openapi_schema = openapi_schema
+    return openapi_schema
+
+
+app.openapi = custom_openapi  # type: ignore[method-assign]
